@@ -34,7 +34,7 @@ class SingleInputEmbedding(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(out_channel, out_channel),
             nn.LayerNorm(out_channel))
-        self.apply(init_weights)
+        self.apply(init_weights) #手动设置初始权重
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.embed(x)
@@ -51,7 +51,7 @@ class MultipleInputEmbedding(nn.Module):
                            nn.LayerNorm(out_channel),
                            nn.ReLU(inplace=True),
                            nn.Linear(out_channel, out_channel))
-             for in_channel in in_channels])
+             for in_channel in in_channels]) # 等同与module的list
         self.aggr_embed = nn.Sequential(
             nn.LayerNorm(out_channel),
             nn.ReLU(inplace=True),

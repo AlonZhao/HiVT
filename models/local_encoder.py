@@ -68,28 +68,35 @@ class LocalEncoder(nn.Module):
                                     dropout=dropout)
 
     def forward(self, data: TemporalData) -> torch.Tensor:
-        for t in range(self.historical_steps):
+        for t in range(self.historical_steps): #所有agent 逐个时刻
             data[f'edge_index_{t}'], _ = subgraph(subset=~data['padding_mask'][:, t], edge_index=data.edge_index)
+            #实际是对每一时刻 所有有效节点之间的属性计算
             data[f'edge_attr_{t}'] = \
                 data['positions'][data[f'edge_index_{t}'][0], t] - data['positions'][data[f'edge_index_{t}'][1], t]
-        if self.parallel:
+        if self.parallel:# True false 都有可能  调用的时候可以改动
             snapshots = [None] * self.historical_steps
             for t in range(self.historical_steps):
                 edge_index, edge_attr = self.drop_edge(data[f'edge_index_{t}'], data[f'edge_attr_{t}'])
                 snapshots[t] = Data(x=data.x[:, t], edge_index=edge_index, edge_attr=edge_attr,
                                     num_nodes=data.num_nodes)
             batch = Batch.from_data_list(snapshots)
+
             out = self.aa_encoder(x=batch.x, t=None, edge_index=batch.edge_index, edge_attr=batch.edge_attr,
                                   bos_mask=data['bos_mask'], rotate_mat=data['rotate_mat'])
+            
+            # print(out.shape)   ->  torch.Size([580, 64]) 
             out = out.view(self.historical_steps, out.shape[0] // self.historical_steps, -1)
+            # print('2',out.shape)  ->   torch.Size([20, 29, 64])
         else:
-            out = [None] * self.historical_steps
-            for t in range(self.historical_steps):
+            out = [None] * self.historical_steps ### no parallel 更好理解
+            for t in range(self.historical_steps):#
                 edge_index, edge_attr = self.drop_edge(data[f'edge_index_{t}'], data[f'edge_attr_{t}'])
                 out[t] = self.aa_encoder(x=data.x[:, t], t=t, edge_index=edge_index, edge_attr=edge_attr,
                                          bos_mask=data['bos_mask'][:, t], rotate_mat=data['rotate_mat'])
             out = torch.stack(out)  # [T, N, D]
+        
         out = self.temporal_encoder(x=out, padding_mask=data['padding_mask'][:, : self.historical_steps])
+        
         edge_index, edge_attr = self.drop_edge(data['lane_actor_index'], data['lane_actor_vectors'])
         out = self.al_encoder(x=(data['lane_vectors'], out), edge_index=edge_index, edge_attr=edge_attr,
                               is_intersections=data['is_intersections'], turn_directions=data['turn_directions'],
@@ -114,8 +121,8 @@ class AAEncoder(MessagePassing):
         self.num_heads = num_heads
         self.parallel = parallel
 
-        self.center_embed = SingleInputEmbedding(in_channel=node_dim, out_channel=embed_dim)
-        self.nbr_embed = MultipleInputEmbedding(in_channels=[node_dim, edge_dim], out_channel=embed_dim)
+        self.center_embed = SingleInputEmbedding(in_channel=node_dim, out_channel=embed_dim)# 2 -> 64
+        self.nbr_embed = MultipleInputEmbedding(in_channels=[node_dim, edge_dim], out_channel=embed_dim) #[2, 2] -> 64
         self.lin_q = nn.Linear(embed_dim, embed_dim)
         self.lin_k = nn.Linear(embed_dim, embed_dim)
         self.lin_v = nn.Linear(embed_dim, embed_dim)
@@ -154,7 +161,7 @@ class AAEncoder(MessagePassing):
                                  rotate_mat.expand(self.historical_steps, *rotate_mat.shape)).squeeze(-2))
             center_embed = torch.where(bos_mask.t().unsqueeze(-1),
                                        self.bos_token.unsqueeze(-2),
-                                       center_embed).view(x.shape[0], -1)
+                                       center_embed).contiguous().view(x.shape[0], -1) #改动
         else:
             if rotate_mat is None:
                 center_embed = self.center_embed(x)

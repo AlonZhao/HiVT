@@ -101,4 +101,11 @@ If you found this repository useful, please consider citing our work:
 ## License
 
 This repository is licensed under [Apache 2.0](LICENSE).
+## my 
+python eval.py --root /home/alon/Learning/hivt_data/ --batch_size 20 --ckpt_path     /home/alon/Learning/HiVT/checkpoints/HiVT-64/checkpoints/epoch=63-step=411903.ckpt
+python train.py --root  /home/alon/Learning/hivt_data/ --embed_dim 64  --train_batch_size 20 --val_batch_size 20
 
+python eval.py --root  /home/alon/Learning/hivt_data/ --batch_size 20 --ckpt_path /home/alon/Learning/HiVT/lightning_logs/version_26/checkpoints/epoch=63-step=659071.ckpt
+python batch_val.py --root  /home/alon/Learning/HiVT  --ckpt_path /home/alon/Learning/HiVT/lightning_logs/version_26/checkpoints/epoch=63-step=659071.ckpt
+
+python val.py --root  /home/alon/Learning/HiVT/data_root  --ckpt_path /home/alon/Learning/HiVT/lightning_logs/version_26/checkpoints/epoch=63-step=659071.ckpt

@@ -27,23 +27,23 @@ from models import MLPDecoder
 from utils import TemporalData
 
 
-class HiVT(pl.LightningModule):
+class HiVT(pl.LightningModule):#继承
 
     def __init__(self,
-                 historical_steps: int,
-                 future_steps: int,
-                 num_modes: int,
-                 rotate: bool,
+                 historical_steps: int,# 过去时间步长20
+                 future_steps: int,# 30
+                 num_modes: int,# 6个输出轨迹
+                 rotate: bool,# 
                  node_dim: int,
                  edge_dim: int,
-                 embed_dim: int,
-                 num_heads: int,
+                 embed_dim: int,#
+                 num_heads: int,#
                  dropout: float,
-                 num_temporal_layers: int,
+                 num_temporal_layers: int,#子模块层次数量
                  num_global_layers: int,
                  local_radius: float,
-                 parallel: bool,
-                 lr: float,
+                 parallel: bool, #并行 agent-agent可以并行计算
+                 lr: float,#优化器参数
                  weight_decay: float,
                  T_max: int,
                  **kwargs) -> None:
@@ -57,7 +57,8 @@ class HiVT(pl.LightningModule):
         self.lr = lr
         self.weight_decay = weight_decay
         self.T_max = T_max
-
+        # 三大模型 
+        ## 获取预测目标及其车道的相关性信息 对称性编码 各自中心
         self.local_encoder = LocalEncoder(historical_steps=historical_steps,
                                           node_dim=node_dim,
                                           edge_dim=edge_dim,
@@ -67,6 +68,7 @@ class HiVT(pl.LightningModule):
                                           num_temporal_layers=num_temporal_layers,
                                           local_radius=local_radius,
                                           parallel=parallel)
+        ## 全局信息传递 
         self.global_interactor = GlobalInteractor(historical_steps=historical_steps,
                                                   embed_dim=embed_dim,
                                                   edge_dim=edge_dim,
@@ -75,19 +77,22 @@ class HiVT(pl.LightningModule):
                                                   num_layers=num_global_layers,
                                                   dropout=dropout,
                                                   rotate=rotate)
+        #获取信息后的解码
         self.decoder = MLPDecoder(local_channels=embed_dim,
                                   global_channels=embed_dim,
                                   future_steps=future_steps,
                                   num_modes=num_modes,
                                   uncertain=True)
+        # 两个损失函数
         self.reg_loss = LaplaceNLLLoss(reduction='mean')
         self.cls_loss = SoftTargetCrossEntropyLoss(reduction='mean')
 
         self.minADE = ADE()
         self.minFDE = FDE()
         self.minMR = MR()
-
+        # 前向传播
     def forward(self, data: TemporalData):
+        # print("Forward is called", flush=True)
         if self.rotate:
             rotate_mat = torch.empty(data.num_nodes, 2, 2, device=self.device)
             sin_vals = torch.sin(data['rotate_angles'])
@@ -97,12 +102,15 @@ class HiVT(pl.LightningModule):
             rotate_mat[:, 1, 0] = sin_vals
             rotate_mat[:, 1, 1] = cos_vals
             if data.y is not None:
-                data.y = torch.bmm(data.y, rotate_mat)
+                data.y = torch.bmm(data.y, rotate_mat)# y: wrt.AV  row vector from AV to agent
+                # print('data.y = torch.bmm(data.y, rotate_mat)')
+                
             data['rotate_mat'] = rotate_mat
         else:
             data['rotate_mat'] = None
 
         local_embed = self.local_encoder(data=data)
+        # print('data',data.shape)
         global_embed = self.global_interactor(data=data, local_embed=local_embed)
         y_hat, pi = self.decoder(local_embed=local_embed, global_embed=global_embed)
         return y_hat, pi
@@ -121,26 +129,126 @@ class HiVT(pl.LightningModule):
         loss = reg_loss + cls_loss
         self.log('train_reg_loss', reg_loss, prog_bar=True, on_step=True, on_epoch=True, batch_size=1)
         return loss
+    ### added by long
+    def predition_unit_batch(self, data, batch_idx):
+        y_hat0, pi = self(data)
+        print("predition_unit_batch is called", flush=True)
+        # print('unit print ',y_hat0.size())
+        # y_hat = y_hat.unsqueeze(0)
+        # pi = pi.unsqueeze(0)
+        # pi = F.softmax(pi)
+        y_hat0 = y_hat0.permute(1, 0, 2, 3)# 从模态，agent，轨迹点，坐标-->agent，模态，轨迹点，坐标 6 30 2
+        # print('unit print ',y_hat0.size())
+        y_hat =  y_hat0[:, :, :, :2]
+        # y_hat_agent = y_hat[data['agent_index'], :, :, :2]
+        # print('unit print y_hat ',y_hat.size())
+        # pi_agent = pi[data['agent_index'], :]
+        if self.rotate:
+            data_angles = data['theta']# AV 的角度
+            data_origin = data['origin']
+            data_rotate_angle = data['rotate_angles']# 各自headings
+            data_local_origin = data.positions[:, 19, :]#预测目标真值轨迹起点
+            rotate_mat = torch.empty(data['num_nodes'], 2, 2, device=self.device)
+            # rotate_mat = torch.empty(1, 2, 2, device=self.device)
+            sin_vals = torch.sin(-data_angles)
+            cos_vals = torch.cos(-data_angles)#负的角度
+            rotate_mat[:, 0, 0] = cos_vals
+            rotate_mat[:, 0, 1] = -sin_vals
+            rotate_mat[:, 1, 0] = sin_vals
+            rotate_mat[:, 1, 1] = cos_vals#原来的旋转矩阵 R^E_AV
+            rotate_local = torch.empty(data['num_nodes'], 2, 2, device=self.device)
+            # rotate_local = torch.empty(1, 2, 2, device=self.device)
+            sin_vals_angle = torch.sin(-data_rotate_angle)
+            cos_vals_angle = torch.cos(-data_rotate_angle)
+            rotate_local[:, 0, 0] = cos_vals_angle
+            rotate_local[:, 0, 1] = -sin_vals_angle
+            rotate_local[:, 1, 0] = sin_vals_angle
+            rotate_local[:, 1, 1] = cos_vals_angle  #agent车的姿态矩阵R^AV_AG的 逆矩阵R^AG_AV
 
-    def validation_step(self, data, batch_idx):
+            position_av = data['positions'] 
+
+
+            for i in range(data['num_nodes']):#agent/actor，模态，轨迹点，坐标
+                stacked_rotate_mat = torch.stack([rotate_mat[i]] *y_hat.shape[1], dim=0)
+                stacked_rotate_local = torch.stack([rotate_local[i]] *y_hat.shape[1] , dim=0)
+
+                # print("input shape:")
+                # print(y_hat[i, :, :, :].shape)
+                # print(stacked_rotate_mat.shape)
+                # print(data_origin[i].shape)
+                y_hat[i, :, :, :] =  torch.matmul( y_hat[i, :, :, :], stacked_rotate_local) + data_local_origin[i].unsqueeze(0).unsqueeze(0)
+                
+                y_hat[i, :, :, :] =  torch.matmul( y_hat[i, :, :, :], stacked_rotate_mat) + data_origin.unsqueeze(0).unsqueeze(0)
+                position_av[i,:,:] = torch.matmul(position_av[i,:,:],rotate_mat[i])+ data_origin.unsqueeze(0).unsqueeze(0)
+        return  y_hat, pi, data['seq_id'],position_av # 转到boot坐标下，pos_av是原始路径在boot下
+    def predition_step(self, data, batch_idx):
         y_hat, pi = self(data)
-        reg_mask = ~data['padding_mask'][:, self.historical_steps:]
-        l2_norm = (torch.norm(y_hat[:, :, :, : 2] - data.y, p=2, dim=-1) * reg_mask).sum(dim=-1)  # [F, N]
-        best_mode = l2_norm.argmin(dim=0)
-        y_hat_best = y_hat[best_mode, torch.arange(data.num_nodes)]
-        reg_loss = self.reg_loss(y_hat_best[reg_mask], data.y[reg_mask])
-        self.log('val_reg_loss', reg_loss, prog_bar=True, on_step=False, on_epoch=True, batch_size=1)
+        pi = F.softmax(pi,dim = 1)
+        y_hat = y_hat.permute(1, 0, 2, 3)
+        y_hat_agent = y_hat[data['agent_index'], :, :, :2]
+        pi_agent = pi[data['agent_index'], :]
+        if self.rotate:
+            data_angles = data['theta']
+            data_origin = data['origin']
+            data_rotate_angle = data['rotate_angles'][data['agent_index']]
+            data_local_origin = data.positions[data['agent_index'], 19, :]
+            rotate_mat = torch.empty(data['agent_index'].shape[0], 2, 2, device=self.device)
+            # rotate_mat = torch.empty(1, 2, 2, device=self.device)
+            sin_vals = torch.sin(-data_angles)
+            cos_vals = torch.cos(-data_angles)
+            rotate_mat[:, 0, 0] = cos_vals
+            rotate_mat[:, 0, 1] = -sin_vals
+            rotate_mat[:, 1, 0] = sin_vals
+            rotate_mat[:, 1, 1] = cos_vals
+            rotate_local = torch.empty(data['agent_index'].shape[0], 2, 2, device=self.device)
+            # rotate_local = torch.empty(1, 2, 2, device=self.device)
+            sin_vals_angle = torch.sin(-data_rotate_angle)
+            cos_vals_angle = torch.cos(-data_rotate_angle)
+            rotate_local[:, 0, 0] = cos_vals_angle
+            rotate_local[:, 0, 1] = -sin_vals_angle
+            rotate_local[:, 1, 0] = sin_vals_angle
+            rotate_local[:, 1, 1] = cos_vals_angle
+            for i in range(data['agent_index'].shape[0]):
+                stacked_rotate_mat = torch.stack([rotate_mat[i]] * self.num_modes, dim=0)
+                stacked_rotate_local = torch.stack([rotate_local[i]] * self.num_modes, dim=0)
+                # print("input shape:", y_hat_agent[i, :, :, :].shape, stacked_rotate_mat.shape, data_origin[i].shape)
+                y_hat_agent[i, :, :, :] = torch.bmm(y_hat_agent[i, :, :, :], stacked_rotate_local) \
+                                          + data_local_origin[i].unsqueeze(0).unsqueeze(0)
+                y_hat_agent[i, :, :, :] = torch.bmm(y_hat_agent[i, :, :, :], stacked_rotate_mat) \
+                                          + data_origin[i].unsqueeze(0).unsqueeze(0)
+        return y_hat_agent, pi_agent, data['seq_id']
+    def validation_step(self, data, batch_idx):
+        y_hat, pi = self(data) # 从模态，agent，轨迹点，坐标+不确定性 [F N1+N2+...N20 30 4] 整个batch
+        # print('y_hat.shape',y_hat.shape)
 
-        y_hat_agent = y_hat[:, data['agent_index'], :, : 2]
-        y_agent = data.y[data['agent_index']]
-        fde_agent = torch.norm(y_hat_agent[:, :, -1] - y_agent[:, -1], p=2, dim=-1)
+        reg_mask = ~data['padding_mask'][:, self.historical_steps:]# reg true 的 才计算 也就是 padding false 的才计算 就是轨迹是有效的地方才计算 padd的位置没有真值
+        # [F N 30 :2] [N, 30, 2] --> [F N 30 2] [1, N, 30, 2] = [F N 30]  对时间维度 30 进行求和 [F N] 存放不同agent 不同模态的 l2 norm
+        l2_norm = (torch.norm(y_hat[:, :, :, : 2] - data.y, p=2, dim=-1) * reg_mask).sum(dim=-1)  # [F, N] 模态和node数
+        best_mode = l2_norm.argmin(dim=0)
+        y_hat_best = y_hat[best_mode, torch.arange(data.num_nodes)]#best_mode挑选对应模态index，num_node 遍历所有node index
+        reg_loss = self.reg_loss(y_hat_best[reg_mask], data.y[reg_mask])# 有效部分的最小的  NLL laplace loss 含有概率的  是多个障碍物的平均 各自一个模态轨迹 
+        # 将验证损失 val_reg_loss 记录并显示在训练进度条和日志中。
+        # 确保该指标在每个 epoch 结束时（而不是每个 batch 结束时）进行记录。
+        self.log('val_reg_loss', reg_loss, prog_bar=True, on_step=False, on_epoch=True, batch_size=1)#展示每个样本的指标值
+
+        agent_av_idx =  data['agent_index']
+        # print('agent_av_idx.shape',agent_av_idx.shape)
+        y_hat_agent = y_hat[:, agent_av_idx, :, : 2]
+        y_agent = data.y[agent_av_idx]
+        # 专门计算指定agent的fde
+        fde_agent = torch.norm(y_hat_agent[:, :, -1] - y_agent[:, -1], p=2, dim=-1)# [F,30,2]
         best_mode_agent = fde_agent.argmin(dim=0)
-        y_hat_best_agent = y_hat_agent[best_mode_agent, torch.arange(data.num_graphs)]
-        self.minADE.update(y_hat_best_agent, y_agent)
+        # print('y_hat_agent.shape  ',y_hat_agent.shape) #torch.Size([6, 20, 30, 2])
+        y_hat_best_agent = y_hat_agent[best_mode_agent, torch.arange(data.num_graphs)]#后面这个维度没什么必要
+        # print('y_hat_best_agent.shape',y_hat_best_agent.shape) #torch.Size([20, 30, 2]) 
+        # print('data.num_graphs in validation_step is ',data.num_graphs)# 20
+        # 每个障碍物的best轨迹
+        self.minADE.update(y_hat_best_agent, y_agent)# 20(batch_size)个
         self.minFDE.update(y_hat_best_agent, y_agent)
         self.minMR.update(y_hat_best_agent, y_agent)
+        # validation_step --> update  validation_epoch_end --> compute
         self.log('val_minADE', self.minADE, prog_bar=True, on_step=False, on_epoch=True, batch_size=y_agent.size(0))
-        self.log('val_minFDE', self.minFDE, prog_bar=True, on_step=False, on_epoch=True, batch_size=y_agent.size(0))
+        self.log('val_minFDE', self.minFDE, prog_bar=True, on_step=False, on_epoch=True, batch_size=y_agent.size(0))# 批次数平均
         self.log('val_minMR', self.minMR, prog_bar=True, on_step=False, on_epoch=True, batch_size=y_agent.size(0))
 
     def configure_optimizers(self):
