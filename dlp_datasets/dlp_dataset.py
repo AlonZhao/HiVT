@@ -40,6 +40,7 @@ class DLPDataset(Dataset):# 注意是 geo中的
         else:
             raise ValueError(split + ' is not valid')# 设置数据存储目录 设置文件名字
         # self.root = root
+        print('train or val ', split)
         self.root = root # .../dlp-root
         self._raw_file_names = os.listdir(self.raw_dir)
         self._processed_file_names = os.listdir(self.processed_dir)# explore to get instead of splitext
@@ -75,8 +76,8 @@ class DLPDataset(Dataset):# 注意是 geo中的
     
     def process(self) -> None:# execute  at  first processing  
         print('process csv files')
-        csv_files = list_csv_files_sorted(self.raw_paths)# 调通后验证这一块是否有点多余了
-        # 每次读取两个元素
+        csv_files = list_csv_files_sorted(self.raw_dir)# 调通后验证这一块是否有点多余了 batch必须是偶数 因为要一次性取出一对儿
+        # 每次读取两个文件
         for i in range(0, len(csv_files), 2):
             lanes_path = csv_files[i]
             obs_path = csv_files[i+1]
@@ -84,7 +85,7 @@ class DLPDataset(Dataset):# 注意是 geo中的
             obs_filename = os.path.basename(obs_path)
             # 查找文件名前缀的公共部分
             prefix = os.path.commonprefix([lane_filename, obs_filename])
-            print(prefix)
+            # print(prefix)
             # 每个文件中取得的帧数
             obs_df = pd.read_csv(obs_path)  
             timestamps = list(np.sort(obs_df['frame_idx'].unique()))
@@ -100,9 +101,17 @@ class DLPDataset(Dataset):# 注意是 geo中的
                     continue
                 kwargs = get_features(raw_lane_path=lanes_path,raw_path_obs = obs_path,
                 frame_to_get = frame_to_get)
-                _data = TemporalData(**kwargs)#封装成自定义数据类型
-                torch.save(_data, os.path.join(self.processed_dir, prefix + str(frame_to_get) + '.pt'))# 根据目录存为pt文件
-
+                _data = TemporalData(**kwargs)#封装成自定义数据类型\
+                print('OK1')
+                file_to_save_path = os.path.join(self.processed_dir, prefix + str(frame_to_get) + '.pt')
+                print(f"Saving file to: {file_to_save_path}")
+                torch.save(_data, file_to_save_path)
+                # try:
+                #     torch.save(_data, file_to_save_path)
+                # except Exception as e:
+                #     print(f"Error saving file: {e}")
+                # torch.save(_data, os.path.join(self.processed_dir, f"{prefix}_{frame_to_get}.pt"))
+                # torch.save(_data, os.path.join(self.processed_dir, prefix + str(frame_to_get) + '.pt'))# 、
 def get_features( raw_lane_path: str,
               raw_path_obs: str,
               frame_to_get: int
@@ -269,16 +278,13 @@ def get_features( raw_lane_path: str,
     traffic_controls =  ones_tensor == 0 # default false
     #AL interaction
     lane_actor_index = torch.LongTensor(list(product(torch.arange(lane_vectors.size(0)), node_inds_19))).t().contiguous()# diff data type
-    #AL vectors at every point to every actor
+    #AL vectors at every point to every actor 
     lane_actor_vectors = \
         lanes_position.repeat_interleave(len(node_inds_19), dim=0) - node_positions_rel.repeat(lane_vectors.size(0), 1)
     mask = torch.norm(lane_actor_vectors, p=2, dim=-1) < 50 # 
     lane_actor_index = lane_actor_index[:, mask]
     lane_actor_vectors = lane_actor_vectors[mask]
-
-
-### file name index
-    seq_id = str(frame_to_get)
+    seq_id = frame_to_get
 # L = (m * (n-1) )
     return  {
         'x': x[:, : 20],  # [N, 20, 2] 
@@ -298,7 +304,7 @@ def get_features( raw_lane_path: str,
         'seq_id': int(seq_id),
         'av_index': av_index,
         'agent_index': agent_index,
-        'city': 'HeFei',
+        'city': None,
         'origin': origin.unsqueeze(0),
         'theta': theta,
         'raw_lane_pos': raw_lane_pos, #n*2

@@ -9,7 +9,7 @@ from itertools import product
 from typing import  Dict
 import sys
 sys.path.append(os.getcwd())
-os.chdir('../')  # pwd to parent
+os.chdir('../')  # pwd to parent 'utils
 import numpy as np
 import pandas as pd
 import torch
@@ -232,7 +232,7 @@ def list_csv_files_sorted(folder_path):
 if __name__ == '__main__':
     
     # 例如文件夹路径 '/path/to/your/folder'
-    csv_folder_path = '/home/alon/Learning/HiVT/csv_data'
+    csv_folder_path = '/home/alon/Learning/HiVT/data_root/val/data'
     pt_folder_path = '/home/alon/Learning/HiVT/pre-process'
     csv_files = list_csv_files_sorted(csv_folder_path)
 

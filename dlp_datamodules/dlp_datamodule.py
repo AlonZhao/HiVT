@@ -2,7 +2,7 @@ from typing import Callable, Optional
 from pytorch_lightning import LightningDataModule
 from torch_geometric.data import DataLoader
 from dlp_datasets import DLPDataset
-
+import os
 class DLPDataModule(LightningDataModule):#数据集接口 数据加载和预处理
 
     def __init__(self,
@@ -32,20 +32,32 @@ class DLPDataModule(LightningDataModule):#数据集接口 数据加载和预处�
         print('prepare_data:')
         DLPDataset(self.root, 'train', self.train_transform, self.local_radius)
         DLPDataset(self.root, 'val', self.val_transform, self.local_radius)
+
         
 
     def setup(self, stage: Optional[str] = None) -> None: #分训练和验证 确保 setup 方法能够兼容不同版本的 PyTorch Lightning，同时保持灵活性。
         print('setup : ')
+        # remove useless files
+        files_to_remove = ['pre_filter.pt','pre_transform.pt']
+        for file in files_to_remove:
+            file_path1 = os.path.join(self.root,'train/processed', file)
+            file_path2 = os.path.join(self.root,'val/processed', file)
+            if os.path.exists(file_path1):
+                os.remove(file_path1)
+                print(f'Removed: {file_path1}')
+            if os.path.exists(file_path2):
+                os.remove(file_path2)
+                print(f'Removed: {file_path2}')        
         self.train_dataset = DLPDataset(self.root, 'train', self.train_transform, self.local_radius)
         self.val_dataset = DLPDataset(self.root, 'val', self.val_transform, self.local_radius)
 
     def train_dataloader(self): # 加载训练数据部分 fit 时候自动调用
-        print('train_dataloader:')
-        return DataLoader(self.train_dataset, batch_size=self.train_batch_size, shuffle=self.shuffle,
+        # print('train_dataloader:')
+        return DataLoader(self.train_dataset, batch_size=20, shuffle=self.shuffle,
                           num_workers=self.num_workers, pin_memory=self.pin_memory,
                           persistent_workers=self.persistent_workers)
 
     def val_dataloader(self): # 加载训练数据部分 每一轮结束 时候自动调用
-        print('val_dataloader:')
+        # print('val_dataloader:')
         return DataLoader(self.val_dataset, batch_size=self.val_batch_size, shuffle=False, num_workers=self.num_workers,
                           pin_memory=self.pin_memory, persistent_workers=self.persistent_workers)
