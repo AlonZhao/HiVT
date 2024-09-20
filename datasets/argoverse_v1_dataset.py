@@ -142,7 +142,7 @@ def process_argoverse(split: str,
             padding_mask[node_idx, 20:] = True
 
     # bos_mask is True if time step t is valid and time step t-1 is invalid
-    bos_mask[:, 0] = ~padding_mask[:, 0]# break/begining-of-Sequence Mask
+    bos_mask[:, 0] = ~padding_mask[:, 0]# begining-of-Sequence Mask
     bos_mask[:, 1: 20] = padding_mask[:, : 19] & ~padding_mask[:, 1: 20] # 某个时间t试试是有效的并且之前的时间是无效的 标记那些在时间步 t 有数据而时间步 t-1 需要填充的时间步
     positions = x.clone()#保留原始轨迹位置，以AV为中心
     #使用偏差

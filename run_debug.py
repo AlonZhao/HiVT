@@ -10,7 +10,7 @@ import os
 import random
 
 model_unit = HiVT.load_from_checkpoint('/home/alon/Learning/HiVT/lightning_logs/version_26/checkpoints/epoch=63-step=659071.ckpt'
-                                       , parallel=True)
+                                       , parallel=False)
 _info = model_unit.eval()
 file_path = '/home/alon/Learning/hivt_data/val/processed/20099.pt'
 # 加载文件内容

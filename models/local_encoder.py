@@ -79,28 +79,30 @@ class LocalEncoder(nn.Module):
                 edge_index, edge_attr = self.drop_edge(data[f'edge_index_{t}'], data[f'edge_attr_{t}'])
                 snapshots[t] = Data(x=data.x[:, t], edge_index=edge_index, edge_attr=edge_attr,
                                     num_nodes=data.num_nodes)
-            batch = Batch.from_data_list(snapshots)
+            batch = Batch.from_data_list(snapshots) # 0->19   0->19  因此后面是//19
 
             out = self.aa_encoder(x=batch.x, t=None, edge_index=batch.edge_index, edge_attr=batch.edge_attr,
                                   bos_mask=data['bos_mask'], rotate_mat=data['rotate_mat'])
             
-            # print(out.shape)   ->  torch.Size([580, 64]) 
+            print(out.shape)  # ->  torch.Size([580, 64]) 
             out = out.view(self.historical_steps, out.shape[0] // self.historical_steps, -1)
+            # center embed
             # print('2',out.shape)  ->   torch.Size([20, 29, 64])
         else:
             out = [None] * self.historical_steps ### no parallel 更好理解
             for t in range(self.historical_steps):#
-                edge_index, edge_attr = self.drop_edge(data[f'edge_index_{t}'], data[f'edge_attr_{t}'])
+                edge_index, edge_attr = self.drop_edge(data[f'edge_index_{t}'], data[f'edge_attr_{t}'])# 都会合并边信息
                 out[t] = self.aa_encoder(x=data.x[:, t], t=t, edge_index=edge_index, edge_attr=edge_attr,
                                          bos_mask=data['bos_mask'][:, t], rotate_mat=data['rotate_mat'])
             out = torch.stack(out)  # [T, N, D]
         
         out = self.temporal_encoder(x=out, padding_mask=data['padding_mask'][:, : self.historical_steps])
-        
+        # [29, 64]
         edge_index, edge_attr = self.drop_edge(data['lane_actor_index'], data['lane_actor_vectors'])
         out = self.al_encoder(x=(data['lane_vectors'], out), edge_index=edge_index, edge_attr=edge_attr,
                               is_intersections=data['is_intersections'], turn_directions=data['turn_directions'],
                               traffic_controls=data['traffic_controls'], rotate_mat=data['rotate_mat'])
+        # print('3',out.shape) # [29, 64]
         return out
 
 
@@ -121,7 +123,7 @@ class AAEncoder(MessagePassing):
         self.num_heads = num_heads
         self.parallel = parallel
 
-        self.center_embed = SingleInputEmbedding(in_channel=node_dim, out_channel=embed_dim)# 2 -> 64
+        self.center_embed = SingleInputEmbedding(in_channel=node_dim, out_channel=embed_dim)# [history_batch 2] -> [history_batch 64]
         self.nbr_embed = MultipleInputEmbedding(in_channels=[node_dim, edge_dim], out_channel=embed_dim) #[2, 2] -> 64
         self.lin_q = nn.Linear(embed_dim, embed_dim)
         self.lin_k = nn.Linear(embed_dim, embed_dim)
@@ -158,16 +160,18 @@ class AAEncoder(MessagePassing):
             else:
                 center_embed = self.center_embed(
                     torch.matmul(x.view(self.historical_steps, x.shape[0] // self.historical_steps, -1).unsqueeze(-2),
-                                 rotate_mat.expand(self.historical_steps, *rotate_mat.shape)).squeeze(-2))
+                                 rotate_mat.expand(self.historical_steps, *rotate_mat.shape)).squeeze(-2))# 转到AG自身坐标下
             center_embed = torch.where(bos_mask.t().unsqueeze(-1),
-                                       self.bos_token.unsqueeze(-2),
-                                       center_embed).contiguous().view(x.shape[0], -1) #改动
+                                       self.bos_token.unsqueeze(-2),# [20, 64]
+                                       center_embed).contiguous().view(x.shape[0], -1) 
         else:
             if rotate_mat is None:
                 center_embed = self.center_embed(x)
             else:
                 center_embed = self.center_embed(torch.bmm(x.unsqueeze(-2), rotate_mat).squeeze(-2))
             center_embed = torch.where(bos_mask.unsqueeze(-1), self.bos_token[t], center_embed)
+            print('edge_index',edge_index.shape)
+            print('edge_attr',edge_attr.shape)
         center_embed = center_embed + self._mha_block(self.norm1(center_embed), x, edge_index, edge_attr, rotate_mat,
                                                       size)
         center_embed = center_embed + self._ff_block(self.norm2(center_embed))
@@ -175,8 +179,8 @@ class AAEncoder(MessagePassing):
 
     def message(self,
                 edge_index: Adj,
-                center_embed_i: torch.Tensor,
-                x_j: torch.Tensor,
+                center_embed_i: torch.Tensor,  # center_embed [N,D] -> center_embed[edge_index[1]]  [E,D]
+                x_j: torch.Tensor,# x_j 通常是通过 edge_index 中提取 x_j = x[edge_index[1]]
                 edge_attr: torch.Tensor,
                 rotate_mat: Optional[torch.Tensor],
                 index: torch.Tensor,
@@ -186,26 +190,36 @@ class AAEncoder(MessagePassing):
             nbr_embed = self.nbr_embed([x_j, edge_attr])
         else:
             if self.parallel:
-                center_rotate_mat = rotate_mat.repeat(self.historical_steps, 1, 1)[edge_index[1]]
+                center_rotate_mat = rotate_mat.repeat(self.historical_steps, 1, 1)[edge_index[1]]# 索引目标节点的旋转矩阵
             else:
-                center_rotate_mat = rotate_mat[edge_index[1]]
-            nbr_embed = self.nbr_embed([torch.bmm(x_j.unsqueeze(-2), center_rotate_mat).squeeze(-2),
+                center_rotate_mat = rotate_mat[edge_index[1]] # 从AV下到AG下
+            nbr_embed = self.nbr_embed([torch.bmm(x_j.unsqueeze(-2), center_rotate_mat).squeeze(-2),# 相对目标节点
                                         torch.bmm(edge_attr.unsqueeze(-2), center_rotate_mat).squeeze(-2)])
         query = self.lin_q(center_embed_i).view(-1, self.num_heads, self.embed_dim // self.num_heads)
         key = self.lin_k(nbr_embed).view(-1, self.num_heads, self.embed_dim // self.num_heads)
         value = self.lin_v(nbr_embed).view(-1, self.num_heads, self.embed_dim // self.num_heads)
         scale = (self.embed_dim // self.num_heads) ** 0.5
-        alpha = (query * key).sum(dim=-1) / scale
+        alpha = (query * key).sum(dim=-1) / scale #query 和 key 逐元素相乘 sum 等价于 转置相乘
         alpha = softmax(alpha, index, ptr, size_i)
+        print('alpha.shape',alpha.shape)
         alpha = self.attn_drop(alpha)
-        return value * alpha.unsqueeze(-1)
+        print('center_embed_i',center_embed_i.shape)# center_embed_i torch.Size([3994, 64]) nbr_embed torch.Size([3994, 64])
+        print('nbr_embed',nbr_embed.shape)
+        print('message ')
+        print('query ',query.shape)
+        print('key ',key.shape)
+        out =  value * alpha.unsqueeze(-1)
+        print('out.shape ',out.shape)
+        return out # 自动求和
 
     def update(self,
                inputs: torch.Tensor,
                center_embed: torch.Tensor) -> torch.Tensor:
+        print(',inputs.shape',inputs.shape)
         inputs = inputs.view(-1, self.embed_dim)
         gate = torch.sigmoid(self.lin_ih(inputs) + self.lin_hh(center_embed))
-        return inputs + gate * (self.lin_self(center_embed) - inputs)
+        # print('update ')
+        return inputs + gate * (self.lin_self(center_embed) - inputs) #多次 自动组合成一个 Tensor
 
     def _mha_block(self,
                    center_embed: torch.Tensor,
@@ -231,9 +245,9 @@ class TemporalEncoder(nn.Module):
                  num_layers: int = 4,
                  dropout: float = 0.1) -> None:
         super(TemporalEncoder, self).__init__()
-        encoder_layer = TemporalEncoderLayer(embed_dim=embed_dim, num_heads=num_heads, dropout=dropout)
+        encoder_layer = TemporalEncoderLayer(embed_dim=embed_dim, num_heads=num_heads, dropout=dropout)# 串行传递
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=num_layers,
-                                                         norm=nn.LayerNorm(embed_dim))
+                                                         norm=nn.LayerNorm(embed_dim)) #实例化了一个embed_dim维度的 LayerNorm
         self.padding_token = nn.Parameter(torch.Tensor(historical_steps, 1, embed_dim))
         self.cls_token = nn.Parameter(torch.Tensor(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(torch.Tensor(historical_steps + 1, 1, embed_dim))
@@ -241,23 +255,24 @@ class TemporalEncoder(nn.Module):
         self.register_buffer('attn_mask', attn_mask)
         nn.init.normal_(self.padding_token, mean=0., std=.02)
         nn.init.normal_(self.cls_token, mean=0., std=.02)
-        nn.init.normal_(self.pos_embed, mean=0., std=.02)
+        nn.init.normal_(self.pos_embed, mean=0., std=.02) #训练过程中会随着模型的训练而更新
         self.apply(init_weights)
 
     def forward(self,
                 x: torch.Tensor,
                 padding_mask: torch.Tensor) -> torch.Tensor:
-        x = torch.where(padding_mask.t().unsqueeze(-1), self.padding_token, x)
-        expand_cls_token = self.cls_token.expand(-1, x.shape[1], -1)
-        x = torch.cat((x, expand_cls_token), dim=0)
-        x = x + self.pos_embed
-        out = self.transformer_encoder(src=x, mask=self.attn_mask, src_key_padding_mask=None)
-        return out[-1]  # [N, D]
+        x = torch.where(padding_mask.t().unsqueeze(-1), self.padding_token, x)# padding_mask.t().unsqueeze(-1) True: x -> padding_token False: x->x
+        expand_cls_token = self.cls_token.expand(-1, x.shape[1], -1)  #[1,1,D] + [T, N, D] -> [1, N, D]
+        x = torch.cat((x, expand_cls_token), dim=0)# 拼接 classification token 在历史段末尾
+        x = x + self.pos_embed 
+        # [T + 1, N, D]
+        out = self.transformer_encoder(src=x, mask=self.attn_mask, src_key_padding_mask=None) # 调用多个layer了
+        return out[-1]  # [N, D] 取出输出序列中最后一个时间步的结果
 
     @staticmethod
-    def generate_square_subsequent_mask(seq_len: int) -> torch.Tensor:
-        mask = (torch.triu(torch.ones(seq_len, seq_len)) == 1).transpose(0, 1)
-        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+    def generate_square_subsequent_mask(seq_len: int) -> torch.Tensor: #只能关注当前时间步及之前的时间步 # historical_steps + 1
+        mask = (torch.triu(torch.ones(seq_len, seq_len)) == 1).transpose(0, 1) # 对角线及上方 1 ，对角线下方 0 ->  转置后 对角线及下方 1 对角线上方 0
+        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0)) #  填充后对角线及其下方为1->0.0 上方 0->inf
         return mask
 
 
@@ -280,17 +295,17 @@ class TemporalEncoderLayer(nn.Module):
     def forward(self,
                 src: torch.Tensor,
                 src_mask: Optional[torch.Tensor] = None,
-                src_key_padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+                src_key_padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor: #None
         x = src
-        x = x + self._sa_block(self.norm1(x), src_mask, src_key_padding_mask)
-        x = x + self._ff_block(self.norm2(x))
+        x = x + self._sa_block(self.norm1(x), src_mask, src_key_padding_mask)# 残差连接 和 自注意力机制
+        x = x + self._ff_block(self.norm2(x)) #残差链接
         return x
 
     def _sa_block(self,
                   x: torch.Tensor,
                   attn_mask: Optional[torch.Tensor],
-                  key_padding_mask: Optional[torch.Tensor]) -> torch.Tensor:
-        x = self.self_attn(x, x, x, attn_mask=attn_mask, key_padding_mask=key_padding_mask, need_weights=False)[0]
+                  key_padding_mask: Optional[torch.Tensor]) -> torch.Tensor: # src_key_padding_mask
+        x = self.self_attn(x, x, x, attn_mask=attn_mask, key_padding_mask=key_padding_mask, need_weights=False)[0] #  取第一个值：注意力输出张量 忽略 一个是注意力权重矩阵
         return self.dropout1(x)
 
     def _ff_block(self, x: torch.Tensor) -> torch.Tensor:
@@ -347,18 +362,19 @@ class ALEncoder(MessagePassing):
                 rotate_mat: Optional[torch.Tensor] = None,
                 size: Size = None) -> torch.Tensor:
         x_lane, x_actor = x
-        is_intersections = is_intersections.long()
+        is_intersections = is_intersections.long() # 64位  8字节
         turn_directions = turn_directions.long()
         traffic_controls = traffic_controls.long()
         x_actor = x_actor + self._mha_block(self.norm1(x_actor), x_lane, edge_index, edge_attr, is_intersections,
                                             turn_directions, traffic_controls, rotate_mat, size)
         x_actor = x_actor + self._ff_block(self.norm2(x_actor))
+        # [29, 64][N,D]
         return x_actor
 
     def message(self,
                 edge_index: Adj,
-                x_i: torch.Tensor,
-                x_j: torch.Tensor,
+                x_i: torch.Tensor,# tf-embed
+                x_j: torch.Tensor,# lane vector
                 edge_attr: torch.Tensor,
                 is_intersections_j,
                 turn_directions_j,
@@ -367,6 +383,8 @@ class ALEncoder(MessagePassing):
                 index: torch.Tensor,
                 ptr: OptTensor,
                 size_i: Optional[int]) -> torch.Tensor:
+        print('AL-x_i',x_i.shape)
+        print('AL-x_j',x_j.shape)
         if rotate_mat is None:
             x_j = self.lane_embed([x_j, edge_attr],
                                   [self.is_intersection_embed[is_intersections_j],
@@ -379,17 +397,18 @@ class ALEncoder(MessagePassing):
                                   [self.is_intersection_embed[is_intersections_j],
                                    self.turn_direction_embed[turn_directions_j],
                                    self.traffic_control_embed[traffic_controls_j]])
+
         query = self.lin_q(x_i).view(-1, self.num_heads, self.embed_dim // self.num_heads)
         key = self.lin_k(x_j).view(-1, self.num_heads, self.embed_dim // self.num_heads)
         value = self.lin_v(x_j).view(-1, self.num_heads, self.embed_dim // self.num_heads)
-        scale = (self.embed_dim // self.num_heads) ** 0.5
+        scale = (self.embed_dim // self.num_heads) ** 0.5 # sqrt(dk)
         alpha = (query * key).sum(dim=-1) / scale
         alpha = softmax(alpha, index, ptr, size_i)
         alpha = self.attn_drop(alpha)
-        return value * alpha.unsqueeze(-1)
+        return value * alpha.unsqueeze(-1) # m^t_i
 
     def update(self,
-               inputs: torch.Tensor,
+               inputs: torch.Tensor, # m
                x: torch.Tensor) -> torch.Tensor:
         x_actor = x[1]
         inputs = inputs.view(-1, self.embed_dim)
@@ -406,9 +425,13 @@ class ALEncoder(MessagePassing):
                    traffic_controls: torch.Tensor,
                    rotate_mat: Optional[torch.Tensor],
                    size: Size) -> torch.Tensor:
+        print('_mha_block-x_lane',x_lane.shape)
+        print('_mha_block-x_actor',x_actor.shape)
+        print('_mha_block-edge_attr',edge_attr.shape)
         x_actor = self.out_proj(self.propagate(edge_index=edge_index, x=(x_lane, x_actor), edge_attr=edge_attr,
                                                is_intersections=is_intersections, turn_directions=turn_directions,
                                                traffic_controls=traffic_controls, rotate_mat=rotate_mat, size=size))
+
         return self.proj_drop(x_actor)
 
     def _ff_block(self, x_actor: torch.Tensor) -> torch.Tensor:

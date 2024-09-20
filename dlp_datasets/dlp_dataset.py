@@ -101,8 +101,8 @@ class DLPDataset(Dataset):# 注意是 geo中的
                     continue
                 kwargs = get_features(raw_lane_path=lanes_path,raw_path_obs = obs_path,
                 frame_to_get = frame_to_get)
-                _data = TemporalData(**kwargs)#封装成自定义数据类型\
-                print('OK1')
+                _data = TemporalData(**kwargs)#封装成自定义数据类型
+               
                 file_to_save_path = os.path.join(self.processed_dir, prefix + str(frame_to_get) + '.pt')
                 print(f"Saving file to: {file_to_save_path}")
                 torch.save(_data, file_to_save_path)

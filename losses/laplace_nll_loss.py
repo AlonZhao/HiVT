@@ -27,10 +27,10 @@ class LaplaceNLLLoss(nn.Module):
     def forward(self,
                 pred: torch.Tensor,
                 target: torch.Tensor) -> torch.Tensor:
-        loc, scale = pred.chunk(2, dim=-1)
+        loc, scale = pred.chunk(2, dim=-1) #差分成两块[sum Hi,4] -> [sum Hi,2]
         scale = scale.clone()
         with torch.no_grad():
-            scale.clamp_(min=self.eps)
+            scale.clamp_(min=self.eps) # 可见 scale就是不确定度b 类似于方差的作用
         nll = torch.log(2 * scale) + torch.abs(target - loc) / scale
         if self.reduction == 'mean':
             return nll.mean()

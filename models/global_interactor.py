@@ -64,7 +64,7 @@ class GlobalInteractor(nn.Module):
         if data['rotate_mat'] is None:
             rel_embed = self.rel_embed(rel_pos)
         else:
-            rel_pos = torch.bmm(rel_pos.unsqueeze(-2), data['rotate_mat'][edge_index[1]]).squeeze(-2)
+            rel_pos = torch.bmm(rel_pos.unsqueeze(-2), data['rotate_mat'][edge_index[1]]).squeeze(-2)# AV -> AG
             rel_theta = data['rotate_angles'][edge_index[0]] - data['rotate_angles'][edge_index[1]]
             rel_theta_cos = torch.cos(rel_theta).unsqueeze(-1)
             rel_theta_sin = torch.sin(rel_theta).unsqueeze(-1)

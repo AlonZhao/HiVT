@@ -25,7 +25,7 @@ class SoftTargetCrossEntropyLoss(nn.Module):
     def forward(self,
                 pred: torch.Tensor,
                 target: torch.Tensor) -> torch.Tensor:
-        cross_entropy = torch.sum(-target * F.log_softmax(pred, dim=-1), dim=-1)
+        cross_entropy = torch.sum(-target * F.log_softmax(pred, dim=-1), dim=-1)# target如何获得
         if self.reduction == 'mean':
             return cross_entropy.mean()
         elif self.reduction == 'sum':

@@ -110,22 +110,22 @@ class HiVT(pl.LightningModule):#继承
             data['rotate_mat'] = None
 
         local_embed = self.local_encoder(data=data)
-        # print('data',data.shape)
         global_embed = self.global_interactor(data=data, local_embed=local_embed)
         y_hat, pi = self.decoder(local_embed=local_embed, global_embed=global_embed)
         return y_hat, pi
 
     def training_step(self, data, batch_idx):
-        y_hat, pi = self(data)
-        reg_mask = ~data['padding_mask'][:, self.historical_steps:]
-        valid_steps = reg_mask.sum(dim=-1)
-        cls_mask = valid_steps > 0
-        l2_norm = (torch.norm(y_hat[:, :, :, : 2] - data.y, p=2, dim=-1) * reg_mask).sum(dim=-1)  # [F, N]
-        best_mode = l2_norm.argmin(dim=0)
-        y_hat_best = y_hat[best_mode, torch.arange(data.num_nodes)]
-        reg_loss = self.reg_loss(y_hat_best[reg_mask], data.y[reg_mask])
-        soft_target = F.softmax(-l2_norm[:, cls_mask] / valid_steps[cls_mask], dim=0).t().detach()
-        cls_loss = self.cls_loss(pi[cls_mask], soft_target)
+        y_hat, pi = self(data) #  [F, N, H, 4], [N, F]
+        reg_mask = ~data['padding_mask'][:, self.historical_steps:]# 有效未来时刻轨迹 [N, 30]true false
+        valid_steps = reg_mask.sum(dim=-1) # 有效未来时刻总数 N
+        cls_mask = valid_steps > 0 #识别哪些agent至少有一个有效的未来时间步 valid_steps[cls_mask] 选出来 N的 true / false 
+        l2_norm = (torch.norm(y_hat[:, :, :, : 2] - data.y, p=2, dim=-1) * reg_mask).sum(dim=-1)  # [F, N, H, 2] [ N, H, 2]-> [F, N] 因为同一个agent有效点一样多 所以比较总合就行
+        best_mode = l2_norm.argmin(dim=0) # [N]
+        y_hat_best = y_hat[best_mode, torch.arange(data.num_nodes)]# 最好的模态是 总的误差最小的 [F,N,H,4] -> [N,H,4]
+        reg_loss = self.reg_loss(y_hat_best[reg_mask], data.y[reg_mask])# 最佳模态[有效未来时刻]的 Laplace NLL [sum Hi,4] 会混合在一起 所有agent的最好的模态
+        #[F, 有效代理数量]维度的误差  /  [有效代理数量]的各总步数   在不同agent维度就要平均了 平均每步
+        soft_target = F.softmax(-l2_norm[:, cls_mask] / valid_steps[cls_mask], dim=0).t().detach()# 分离梯度 不参与反向传播 计算有未来时间的误差范数
+        cls_loss = self.cls_loss(pi[cls_mask], soft_target)# 预测的不确定度和 [有效N数, F]
         loss = reg_loss + cls_loss
         self.log('train_reg_loss', reg_loss, prog_bar=True, on_step=True, on_epoch=True, batch_size=1)
         return loss
@@ -300,7 +300,7 @@ class HiVT(pl.LightningModule):#继承
         parser.add_argument('--num_temporal_layers', type=int, default=4)
         parser.add_argument('--num_global_layers', type=int, default=3)
         parser.add_argument('--local_radius', type=float, default=50)
-        parser.add_argument('--parallel', type=bool, default=False)
+        parser.add_argument('--parallel', type=bool, default=True)
         parser.add_argument('--lr', type=float, default=5e-4)
         parser.add_argument('--weight_decay', type=float, default=1e-4)
         parser.add_argument('--T_max', type=int, default=64)
