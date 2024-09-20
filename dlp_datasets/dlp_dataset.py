@@ -81,6 +81,11 @@ class DLPDataset(Dataset):# 注意是 geo中的
         for i in range(0, len(csv_files), 2):
             lanes_path = csv_files[i]
             obs_path = csv_files[i+1]
+            ##增加了文件大小判断
+            lanes_file_size = os.path.getsize(lanes_path) / 1024
+            obs_file_size = os.path.getsize(obs_path) / 1024
+            if obs_file_size < 50 |  lanes_file_size < 500:
+                continue
             lane_filename = os.path.basename(lanes_path)
             obs_filename = os.path.basename(obs_path)
             # 查找文件名前缀的公共部分
@@ -96,11 +101,25 @@ class DLPDataset(Dataset):# 注意是 geo中的
             for frame_to_get in range(frame_start,frame_end,10):
                 # 筛选掉当前没有障碍物的数据
                 df_19 = obs_df[obs_df['frame_idx'] == timestamps[frame_to_get]]# 
+                df_18 = obs_df[obs_df['frame_idx'] == timestamps[frame_to_get - 1]]# 
+                df_20 = obs_df[obs_df['frame_idx'] == timestamps[frame_to_get + 1]]# 
+
+                actors_18 = [actor_id for actor_id in df_18['track_id']]# 当前时刻所有actors
                 actors_19 = [actor_id for actor_id in df_19['track_id']]# 当前时刻所有actors
+                actors_20 = [actor_id for actor_id in df_20['track_id']]# 当前时刻所有actors
+
                 if len(actors_19) < 2:
                     continue
-                kwargs = get_features(raw_lane_path=lanes_path,raw_path_obs = obs_path,
-                frame_to_get = frame_to_get)
+
+                set_18 = {id for id in actors_18 if id > 0}
+                set_19 = {id for id in actors_19 if id > 0}
+                set_20 = {id for id in actors_20 if id > 0}
+
+                common_ids = set_18 & set_19 & set_20
+                if not common_ids:
+                    continue
+
+                kwargs = get_features(raw_lane_path=lanes_path,raw_path_obs = obs_path,frame_to_get = frame_to_get)
                 _data = TemporalData(**kwargs)#封装成自定义数据类型
                
                 file_to_save_path = os.path.join(self.processed_dir, prefix + str(frame_to_get) + '.pt')
@@ -132,7 +151,7 @@ def get_features( raw_lane_path: str,
 
 ### filting 50 frames around frame_to_get
     timestamps = timestamps[ frame_to_get - 19: frame_to_get + 31]
-    print('from to: ',timestamps[0],timestamps[-1]) ## debug message
+    # print('from to: ',timestamps[0],timestamps[-1]) ## debug message
 ### re-filting obs df in 50 sampled frames
     obs_df = obs_df[obs_df['frame_idx'].isin(timestamps)]
 ### history part
@@ -145,7 +164,7 @@ def get_features( raw_lane_path: str,
     obs_df = obs_df[obs_df['track_id'].isin(actor_ids)] #保留历史出现过的ID即可
     
     actor_num = len(actor_ids)
-    print('actors ids :',actor_ids)
+    # print('actors ids :',actor_ids)
 
     av_df = obs_df[obs_df['object_type'] == 1].iloc #aV frameS
     av_index = actor_ids.index(av_df[0]['track_id'])#av  index in actor_ids 
@@ -153,10 +172,10 @@ def get_features( raw_lane_path: str,
 
     # ready to make the scene centered at AV at now(19) moment
     origin = torch.tensor([av_df[19]['rel_x'], av_df[19]['rel_y']], dtype=torch.float)
-    print('origin, av boost pos:', origin)
+    # print('origin, av boost pos:', origin)
     av_heading_vector = origin - torch.tensor([av_df[18]['rel_x'], av_df[18]['rel_y']], dtype=torch.float)# attetion head wrt. boost
     theta = torch.atan2(av_heading_vector[1], av_heading_vector[0])
-    print('av theta in boost at 19 stamps ',theta)
+    # print('av theta in boost at 19 stamps ',theta)
     rotate_mat = torch.tensor([[torch.cos(theta), -torch.sin(theta)],
                                [torch.sin(theta), torch.cos(theta)]])
     
@@ -174,9 +193,9 @@ def get_features( raw_lane_path: str,
     for actor_id, actor_df in obs_df.groupby('track_id'): 
         node_idx = actor_ids.index(actor_id)
         node_steps = [timestamps.index(timestamp) for timestamp in actor_df['frame_idx']]# 在最原始文件中的 时间戳的位置
-        print('actor_id : ',actor_id)
-        print('node_idx : ',node_idx)
-        print('node_steps : ',node_steps)
+        # print('actor_id : ',actor_id)
+        # print('node_idx : ',node_idx)
+        # print('node_steps : ',node_steps)
         padding_mask[node_idx, node_steps] = False
         if padding_mask[node_idx, 19]:  
             padding_mask[node_idx, 20:] = True 
@@ -186,9 +205,9 @@ def get_features( raw_lane_path: str,
         node_historical_steps = list(filter(lambda node_step: node_step < 20, node_steps))
         # mark full sample
         if len(node_historical_steps) == 20:
-            print('full node_historical_steps stamps:', node_idx)
+            # print('full node_historical_steps stamps:', node_idx)
         if len(node_steps) == 50:
-            print('full _steps stamps:', node_idx)
+            # print('full _steps stamps:', node_idx)
             complete_samples.append(node_idx)
         
         if len(node_historical_steps) > 1:  # calculate the heading of the actor (approximately)
@@ -196,7 +215,7 @@ def get_features( raw_lane_path: str,
             rotate_angles[node_idx] = torch.atan2(heading_vector[1], heading_vector[0])
         else:  # make no predictions for the actor if the number of valid time steps is less than 2
             padding_mask[node_idx, 20:] = True
-    print('complete actor index (not id):',complete_samples)
+    # print('complete actor index (not id):',complete_samples)
     # bos_mask is True if time step t is valid and time step t-1 is invalid
     bos_mask[:, 0] = ~padding_mask[:, 0]# nonsense
     bos_mask[:, 1: 20] = padding_mask[:, : 19] & ~padding_mask[:, 1: 20] #
@@ -235,10 +254,10 @@ def get_features( raw_lane_path: str,
 ### re-organize points by numpy
     x_pos_np = x_pos.to_numpy() # m * n
     y_pos_np = y_pos.to_numpy()
-    print('first 5 x lanes pos: ')
-    print((x_pos_np[:,:5]))
-    print('first 5 y lanes pos: ')
-    print((y_pos_np[:,:5]))
+    # print('first 5 x lanes pos: ')
+    # print((x_pos_np[:,:5]))
+    # print('first 5 y lanes pos: ')
+    # print((y_pos_np[:,:5]))
 
     #################### before difference, get raw lane points to convert to boost and  draw after inteference #########################
     raw_one_x = np.hstack(x_pos_np)# flatten multi-lanes' x to one dimension 
@@ -261,7 +280,7 @@ def get_features( raw_lane_path: str,
 
     lane_vectors = torch.from_numpy(lane_vector_np).float()
     lane_vectors = lane_vectors.permute(1,0) #   (m * (n-1) ) * 2
-    print('lane_vectors.shape is ', lane_vectors.shape)
+    # print('lane_vectors.shape is ', lane_vectors.shape)
     #################### before concatenate , get each lane's diff vector  to store  #########################
 
 
