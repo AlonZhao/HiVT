@@ -112,3 +112,6 @@ python batch_val.py --root  /home/alon/Learning/HiVT  --ckpt_path /home/alon/Lea
 python dlp_train.py --root  /home/alon/Learning/HiVT/data_root --embed_dim 64  --train_batch_size 2 --val_batch_size 2  batch需要偶数 数据处理和loader应该用不同的size 他们的尺寸差别很大
 
 python dlp_val.py --root  /home/alon/Learning/HiVT/data_root  --ckpt_path /home/alon/Learning/HiVT/lightning_logs/version_26/checkpoints/epoch=63-step=659071.ckpt
+
+
+python dlp_val.py --root  /home/alon/Learning/HiVT/data_root  --ckpt_path /home/alon/Learning/HiVT/lightning_logs/version_31/checkpoints/epoch=1-step=337.ckpt

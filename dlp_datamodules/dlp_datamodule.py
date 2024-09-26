@@ -53,7 +53,7 @@ class DLPDataModule(LightningDataModule):#数据集接口 数据加载和预处�
 
     def train_dataloader(self): # 加载训练数据部分 fit 时候自动调用
         # print('train_dataloader:')
-        return DataLoader(self.train_dataset, batch_size=20, shuffle=self.shuffle,
+        return DataLoader(self.train_dataset, batch_size=self.train_batch_size, shuffle=self.shuffle,
                           num_workers=self.num_workers, pin_memory=self.pin_memory,
                           persistent_workers=self.persistent_workers)
 

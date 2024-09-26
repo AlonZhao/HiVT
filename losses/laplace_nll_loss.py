@@ -13,6 +13,7 @@
 # limitations under the License.
 import torch
 import torch.nn as nn
+import pdb
 
 
 class LaplaceNLLLoss(nn.Module):
@@ -32,6 +33,7 @@ class LaplaceNLLLoss(nn.Module):
         with torch.no_grad():
             scale.clamp_(min=self.eps) # 可见 scale就是不确定度b 类似于方差的作用
         nll = torch.log(2 * scale) + torch.abs(target - loc) / scale
+        # pdb.set_trace() # 在这里设置断点
         if self.reduction == 'mean':
             return nll.mean()
         elif self.reduction == 'sum':

@@ -1,0 +1,1 @@
+rm -r data_root_min/train/data/*  && rm -r data_root_min/train/processed/* && rm -r data_root_min/val/data/*  && rm -r data_root_min/val/processed/* 

@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import pdb
 from typing import Optional, Tuple
 
 import torch
@@ -79,12 +80,13 @@ class LocalEncoder(nn.Module):
                 edge_index, edge_attr = self.drop_edge(data[f'edge_index_{t}'], data[f'edge_attr_{t}'])
                 snapshots[t] = Data(x=data.x[:, t], edge_index=edge_index, edge_attr=edge_attr,
                                     num_nodes=data.num_nodes)
+                
             batch = Batch.from_data_list(snapshots) # 0->19   0->19  因此后面是//19
 
             out = self.aa_encoder(x=batch.x, t=None, edge_index=batch.edge_index, edge_attr=batch.edge_attr,
                                   bos_mask=data['bos_mask'], rotate_mat=data['rotate_mat'])
             
-            print(out.shape)  # ->  torch.Size([580, 64]) 
+            # print(out.shape)  # ->  torch.Size([580, 64]) 
             out = out.view(self.historical_steps, out.shape[0] // self.historical_steps, -1)
             # center embed
             # print('2',out.shape)  ->   torch.Size([20, 29, 64])
@@ -95,14 +97,18 @@ class LocalEncoder(nn.Module):
                 out[t] = self.aa_encoder(x=data.x[:, t], t=t, edge_index=edge_index, edge_attr=edge_attr,
                                          bos_mask=data['bos_mask'][:, t], rotate_mat=data['rotate_mat'])
             out = torch.stack(out)  # [T, N, D]
-        
+            # pdb.set_trace()
+        # pdb.set_trace()
         out = self.temporal_encoder(x=out, padding_mask=data['padding_mask'][:, : self.historical_steps])
-        # [29, 64]
+        # pdb.set_trace()
+
+        
         edge_index, edge_attr = self.drop_edge(data['lane_actor_index'], data['lane_actor_vectors'])
         out = self.al_encoder(x=(data['lane_vectors'], out), edge_index=edge_index, edge_attr=edge_attr,
                               is_intersections=data['is_intersections'], turn_directions=data['turn_directions'],
                               traffic_controls=data['traffic_controls'], rotate_mat=data['rotate_mat'])
         # print('3',out.shape) # [29, 64]
+        # pdb.set_trace()
         return out
 
 
@@ -161,20 +167,28 @@ class AAEncoder(MessagePassing):
                 center_embed = self.center_embed(
                     torch.matmul(x.view(self.historical_steps, x.shape[0] // self.historical_steps, -1).unsqueeze(-2),
                                  rotate_mat.expand(self.historical_steps, *rotate_mat.shape)).squeeze(-2))# 转到AG自身坐标下
+            
+            # pdb.set_trace()
             center_embed = torch.where(bos_mask.t().unsqueeze(-1),
                                        self.bos_token.unsqueeze(-2),# [20, 64]
                                        center_embed).contiguous().view(x.shape[0], -1) 
+            # print('after mlp', torch.isnan(center_embed).any() )
         else:
             if rotate_mat is None:
                 center_embed = self.center_embed(x)
             else:
                 center_embed = self.center_embed(torch.bmm(x.unsqueeze(-2), rotate_mat).squeeze(-2))
             center_embed = torch.where(bos_mask.unsqueeze(-1), self.bos_token[t], center_embed)
-            print('edge_index',edge_index.shape)
-            print('edge_attr',edge_attr.shape)
+            # print('edge_index',edge_index.shape)
+            # print('edge_attr',edge_attr.shape)
+        # print('before mha', torch.isnan(center_embed).any() )
         center_embed = center_embed + self._mha_block(self.norm1(center_embed), x, edge_index, edge_attr, rotate_mat,
                                                       size)
+        # pdb.set_trace()
+        
         center_embed = center_embed + self._ff_block(self.norm2(center_embed))
+        # pdb.set_trace()
+        # print('after mha', torch.isnan(center_embed).any() )
         return center_embed
 
     def message(self,
@@ -201,21 +215,21 @@ class AAEncoder(MessagePassing):
         scale = (self.embed_dim // self.num_heads) ** 0.5
         alpha = (query * key).sum(dim=-1) / scale #query 和 key 逐元素相乘 sum 等价于 转置相乘
         alpha = softmax(alpha, index, ptr, size_i)
-        print('alpha.shape',alpha.shape)
+        # print('alpha.shape',alpha.shape)
         alpha = self.attn_drop(alpha)
-        print('center_embed_i',center_embed_i.shape)# center_embed_i torch.Size([3994, 64]) nbr_embed torch.Size([3994, 64])
-        print('nbr_embed',nbr_embed.shape)
-        print('message ')
-        print('query ',query.shape)
-        print('key ',key.shape)
+        # print('center_embed_i',center_embed_i.shape)# center_embed_i torch.Size([3994, 64]) nbr_embed torch.Size([3994, 64])
+        # print('nbr_embed',nbr_embed.shape)
+        # print('message ')
+        # print('query ',query.shape)
+        # print('key ',key.shape)
         out =  value * alpha.unsqueeze(-1)
-        print('out.shape ',out.shape)
+        # print('out.shape ',out.shape)
         return out # 自动求和
 
     def update(self,
                inputs: torch.Tensor,
                center_embed: torch.Tensor) -> torch.Tensor:
-        print(',inputs.shape',inputs.shape)
+        # print(',inputs.shape',inputs.shape)
         inputs = inputs.view(-1, self.embed_dim)
         gate = torch.sigmoid(self.lin_ih(inputs) + self.lin_hh(center_embed))
         # print('update ')
@@ -383,8 +397,8 @@ class ALEncoder(MessagePassing):
                 index: torch.Tensor,
                 ptr: OptTensor,
                 size_i: Optional[int]) -> torch.Tensor:
-        print('AL-x_i',x_i.shape)
-        print('AL-x_j',x_j.shape)
+        # print('AL-x_i',x_i.shape)
+        # print('AL-x_j',x_j.shape)
         if rotate_mat is None:
             x_j = self.lane_embed([x_j, edge_attr],
                                   [self.is_intersection_embed[is_intersections_j],
@@ -425,9 +439,9 @@ class ALEncoder(MessagePassing):
                    traffic_controls: torch.Tensor,
                    rotate_mat: Optional[torch.Tensor],
                    size: Size) -> torch.Tensor:
-        print('_mha_block-x_lane',x_lane.shape)
-        print('_mha_block-x_actor',x_actor.shape)
-        print('_mha_block-edge_attr',edge_attr.shape)
+        # print('_mha_block-x_lane',x_lane.shape)
+        # print('_mha_block-x_actor',x_actor.shape)
+        # print('_mha_block-edge_attr',edge_attr.shape)
         x_actor = self.out_proj(self.propagate(edge_index=edge_index, x=(x_lane, x_actor), edge_attr=edge_attr,
                                                is_intersections=is_intersections, turn_directions=turn_directions,
                                                traffic_controls=traffic_controls, rotate_mat=rotate_mat, size=size))

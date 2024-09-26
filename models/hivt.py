@@ -25,13 +25,14 @@ from models import GlobalInteractor
 from models import LocalEncoder
 from models import MLPDecoder
 from utils import TemporalData
+import pdb
 
 
 class HiVT(pl.LightningModule):#继承
 
     def __init__(self,
                  historical_steps: int,# 过去时间步长20
-                 future_steps: int,# 30
+                 future_steps: int,
                  num_modes: int,# 6个输出轨迹
                  rotate: bool,# 
                  node_dim: int,
@@ -112,37 +113,49 @@ class HiVT(pl.LightningModule):#继承
         local_embed = self.local_encoder(data=data)
         global_embed = self.global_interactor(data=data, local_embed=local_embed)
         y_hat, pi = self.decoder(local_embed=local_embed, global_embed=global_embed)
+        # pdb.set_trace()
         return y_hat, pi
 
     def training_step(self, data, batch_idx):
         y_hat, pi = self(data) #  [F, N, H, 4], [N, F]
-        reg_mask = ~data['padding_mask'][:, self.historical_steps:]# 有效未来时刻轨迹 [N, 30]true false
+        nan_mask = torch.isnan(y_hat)
+       
+        reg_mask = ~data['padding_mask'][:, self.historical_steps:]# 有效未来时刻轨迹 [N, 50]true false
         valid_steps = reg_mask.sum(dim=-1) # 有效未来时刻总数 N
         cls_mask = valid_steps > 0 #识别哪些agent至少有一个有效的未来时间步 valid_steps[cls_mask] 选出来 N的 true / false 
         l2_norm = (torch.norm(y_hat[:, :, :, : 2] - data.y, p=2, dim=-1) * reg_mask).sum(dim=-1)  # [F, N, H, 2] [ N, H, 2]-> [F, N] 因为同一个agent有效点一样多 所以比较总合就行
         best_mode = l2_norm.argmin(dim=0) # [N]
         y_hat_best = y_hat[best_mode, torch.arange(data.num_nodes)]# 最好的模态是 总的误差最小的 [F,N,H,4] -> [N,H,4]
+        
         reg_loss = self.reg_loss(y_hat_best[reg_mask], data.y[reg_mask])# 最佳模态[有效未来时刻]的 Laplace NLL [sum Hi,4] 会混合在一起 所有agent的最好的模态
         #[F, 有效代理数量]维度的误差  /  [有效代理数量]的各总步数   在不同agent维度就要平均了 平均每步
         soft_target = F.softmax(-l2_norm[:, cls_mask] / valid_steps[cls_mask], dim=0).t().detach()# 分离梯度 不参与反向传播 计算有未来时间的误差范数
         cls_loss = self.cls_loss(pi[cls_mask], soft_target)# 预测的不确定度和 [有效N数, F]
+        # print('training_step',l2_norm)
         loss = reg_loss + cls_loss
         self.log('train_reg_loss', reg_loss, prog_bar=True, on_step=True, on_epoch=True, batch_size=1)
+        # pdb.set_trace() 
+        if torch.isnan(loss).any():
+            print('NaN in training ',data['filenamne'])
+            raise ValueError("Loss is NaN! Training is interrupted.")
         return loss
     ### added by long
     def predition_unit_batch(self, data, batch_idx):
         y_hat0, pi = self(data)
-        print("predition_unit_batch is called", flush=True)
+        # print("predition_unit_batch is called", flush=True)
         # print('unit print ',y_hat0.size())
         # y_hat = y_hat.unsqueeze(0)
         # pi = pi.unsqueeze(0)
         # pi = F.softmax(pi)
-        y_hat0 = y_hat0.permute(1, 0, 2, 3)# 从模态，agent，轨迹点，坐标-->agent，模态，轨迹点，坐标 6 30 2
+        y_hat0 = y_hat0.permute(1, 0, 2, 3)# 从模态，agent，轨迹点，坐标-->agent_index，模态，轨迹点，坐标  N 6 30 2
         # print('unit print ',y_hat0.size())
         y_hat =  y_hat0[:, :, :, :2]
+        pi, sorted_indices = torch.sort(pi, dim=1, descending=True)
+        y_hat = torch.gather(y_hat, 1, sorted_indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, y_hat.shape[2],  y_hat.shape[3]))
         # y_hat_agent = y_hat[data['agent_index'], :, :, :2]
         # print('unit print y_hat ',y_hat.size())
         # pi_agent = pi[data['agent_index'], :]
+        
         if self.rotate:
             data_angles = data['theta']# AV 的角度
             data_origin = data['origin']
@@ -180,6 +193,7 @@ class HiVT(pl.LightningModule):#继承
                 
                 y_hat[i, :, :, :] =  torch.matmul( y_hat[i, :, :, :], stacked_rotate_mat) + data_origin.unsqueeze(0).unsqueeze(0)
                 position_av[i,:,:] = torch.matmul(position_av[i,:,:],rotate_mat[i])+ data_origin.unsqueeze(0).unsqueeze(0)
+                
         return  y_hat, pi, data['seq_id'],position_av # 转到boot坐标下，pos_av是原始路径在boot下
     def predition_step(self, data, batch_idx):
         y_hat, pi = self(data)
@@ -250,6 +264,9 @@ class HiVT(pl.LightningModule):#继承
         self.log('val_minADE', self.minADE, prog_bar=True, on_step=False, on_epoch=True, batch_size=y_agent.size(0))
         self.log('val_minFDE', self.minFDE, prog_bar=True, on_step=False, on_epoch=True, batch_size=y_agent.size(0))# 批次数平均
         self.log('val_minMR', self.minMR, prog_bar=True, on_step=False, on_epoch=True, batch_size=y_agent.size(0))
+        if torch.isnan(y_hat).any():
+            print('NaN in validation ',data['filenamne'])
+            raise ValueError("Loss is NaN! Training is interrupted.")
 
     def configure_optimizers(self):
         decay = set()
@@ -289,7 +306,7 @@ class HiVT(pl.LightningModule):#继承
     def add_model_specific_args(parent_parser):
         parser = parent_parser.add_argument_group('HiVT')
         parser.add_argument('--historical_steps', type=int, default=20)
-        parser.add_argument('--future_steps', type=int, default=30)
+        parser.add_argument('--future_steps', type=int, default=50) # 5s prediction 
         parser.add_argument('--num_modes', type=int, default=6)
         parser.add_argument('--rotate', type=bool, default=True)
         parser.add_argument('--node_dim', type=int, default=2)
@@ -299,7 +316,7 @@ class HiVT(pl.LightningModule):#继承
         parser.add_argument('--dropout', type=float, default=0.1)
         parser.add_argument('--num_temporal_layers', type=int, default=4)
         parser.add_argument('--num_global_layers', type=int, default=3)
-        parser.add_argument('--local_radius', type=float, default=50)
+        parser.add_argument('--local_radius', type=float, default=80)
         parser.add_argument('--parallel', type=bool, default=True)
         parser.add_argument('--lr', type=float, default=5e-4)
         parser.add_argument('--weight_decay', type=float, default=1e-4)

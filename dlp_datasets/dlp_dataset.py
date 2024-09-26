@@ -40,7 +40,7 @@ class DLPDataset(Dataset):# 注意是 geo中的
         else:
             raise ValueError(split + ' is not valid')# 设置数据存储目录 设置文件名字
         # self.root = root
-        print('train or val ', split)
+        print('train or val : ', split)
         self.root = root # .../dlp-root
         self._raw_file_names = os.listdir(self.raw_dir)
         self._processed_file_names = os.listdir(self.processed_dir)# explore to get instead of splitext
@@ -78,13 +78,32 @@ class DLPDataset(Dataset):# 注意是 geo中的
         print('process csv files')
         csv_files = list_csv_files_sorted(self.raw_dir)# 调通后验证这一块是否有点多余了 batch必须是偶数 因为要一次性取出一对儿
         # 每次读取两个文件
-        for i in range(0, len(csv_files), 2):
+        print('pre-checking')
+        for i in tqdm(range(0, len(csv_files), 2)):
             lanes_path = csv_files[i]
             obs_path = csv_files[i+1]
+            lane_filename = os.path.basename(lanes_path)
+            obs_filename = os.path.basename(obs_path)
+             ##增加了文件名字配对检查
+            lane_date = lane_filename.split('_lines')[0]
+            obs_date = obs_filename.split('_objs')[0]
+
+            if not (lane_date==obs_date):
+                print("Not pair!")
+                print(lane_date)
+                print(obs_date)
+                return 
+
+
+        for i in tqdm(range(0, len(csv_files), 2)):
+            lanes_path = csv_files[i]
+            obs_path = csv_files[i+1]
+
+   
             ##增加了文件大小判断
             lanes_file_size = os.path.getsize(lanes_path) / 1024
             obs_file_size = os.path.getsize(obs_path) / 1024
-            if obs_file_size < 50 |  lanes_file_size < 500:
+            if obs_file_size < 50 or  lanes_file_size < 500:
                 continue
             lane_filename = os.path.basename(lanes_path)
             obs_filename = os.path.basename(obs_path)
@@ -96,7 +115,7 @@ class DLPDataset(Dataset):# 注意是 geo中的
             timestamps = list(np.sort(obs_df['frame_idx'].unique()))
             # 确认起始终止frameid 向后保留100s 向前保留20s
             frame_start = 19
-            frame_end = len(timestamps) - 100
+            frame_end = len(timestamps) - 51
             # 间隔20frame生成数据 也就是2s
             for frame_to_get in range(frame_start,frame_end,10):
                 # 筛选掉当前没有障碍物的数据
@@ -123,7 +142,7 @@ class DLPDataset(Dataset):# 注意是 geo中的
                 _data = TemporalData(**kwargs)#封装成自定义数据类型
                
                 file_to_save_path = os.path.join(self.processed_dir, prefix + str(frame_to_get) + '.pt')
-                print(f"Saving file to: {file_to_save_path}")
+                # print(f"Saving file to: {file_to_save_path}")
                 torch.save(_data, file_to_save_path)
                 # try:
                 #     torch.save(_data, file_to_save_path)
@@ -135,22 +154,24 @@ def get_features( raw_lane_path: str,
               raw_path_obs: str,
               frame_to_get: int
               )-> Dict:
+    file_name = os.path.basename(raw_path_obs)
+    name_parts = file_name.split('_no')[0]
 # obs feature extracttion
     obs_df = pd.read_csv(raw_path_obs)  
     timestamps = list(np.sort(obs_df['frame_idx'].unique()))
-    if( len(timestamps) < 50):
-        print('Not Enough Frames!')
+    if( len(timestamps) < 70): # 5s prediction 50->70
+        # print('Not Enough Frames!')
         return
     if(frame_to_get<19):
-        print('Not Enough History!')
+        # print('Not Enough History!')
         return
-    if(frame_to_get > len(timestamps) -31):
-        print('Not Enough Future!')
+    if(frame_to_get > len(timestamps) -51):  # 5s prediction 31->51
+        # print('Not Enough Future!')
         return 
     
 
 ### filting 50 frames around frame_to_get
-    timestamps = timestamps[ frame_to_get - 19: frame_to_get + 31]
+    timestamps = timestamps[ frame_to_get - 19: frame_to_get + 51]
     # print('from to: ',timestamps[0],timestamps[-1]) ## debug message
 ### re-filting obs df in 50 sampled frames
     obs_df = obs_df[obs_df['frame_idx'].isin(timestamps)]
@@ -180,9 +201,9 @@ def get_features( raw_lane_path: str,
                                [torch.sin(theta), torch.cos(theta)]])
     
 ### initialization features in .pt
-    x = torch.zeros(actor_num, 50, 2, dtype=torch.float)
+    x = torch.zeros(actor_num, 70, 2, dtype=torch.float) # 5s prediction 
     edge_index = torch.LongTensor(list(permutations(range(actor_num), 2))).t().contiguous()#(2, N * N-1) Ai-Aj interaction
-    padding_mask = torch.ones(actor_num, 50, dtype=torch.bool)
+    padding_mask = torch.ones(actor_num, 70, dtype=torch.bool) # 5s prediction 
     bos_mask = torch.zeros(actor_num, 20, dtype=torch.bool)
     rotate_angles = torch.zeros(actor_num, dtype=torch.float)
     # full frames samples
@@ -204,9 +225,9 @@ def get_features( raw_lane_path: str,
         x[node_idx, node_steps] = torch.matmul(xy - origin , rotate_mat)# center with the AV at 19 s
         node_historical_steps = list(filter(lambda node_step: node_step < 20, node_steps))
         # mark full sample
-        if len(node_historical_steps) == 20:
+        # if len(node_historical_steps) == 20:
             # print('full node_historical_steps stamps:', node_idx)
-        if len(node_steps) == 50:
+        if len(node_steps) == 70: # 7s prediction 
             # print('full _steps stamps:', node_idx)
             complete_samples.append(node_idx)
         
@@ -225,7 +246,7 @@ def get_features( raw_lane_path: str,
 
     # gt future wrt. x(19)
     x[:, 20:] = torch.where((padding_mask[:, 19].unsqueeze(-1) | padding_mask[:, 20:]).unsqueeze(-1),
-                            torch.zeros(actor_num, 30, 2),
+                            torch.zeros(actor_num, 50, 2),# 5s prediction 
                             x[:, 20:] - x[:, 19].unsqueeze(-2))#torch.where(condition, x_if_true, x_if_false)
     # past wrt. past.shift(-1)
     x[:, 1: 20] = torch.where((padding_mask[:, : 19] | padding_mask[:, 1: 20]).unsqueeze(-1),
@@ -249,8 +270,16 @@ def get_features( raw_lane_path: str,
 
     lane_idx_start =  3 # depends on file format
     # select lanes points  by x y respt.
-    x_pos = target_lanes_df[:, range(lane_idx_start, num_columns, 2)]
-    y_pos = target_lanes_df[:, range(lane_idx_start + 1 , num_columns, 2)]
+
+    #原来的程序
+    # x_pos = target_lanes_df[:, range(lane_idx_start, num_columns, 2)]
+    # y_pos = target_lanes_df[:, range(lane_idx_start + 1 , num_columns, 2)]
+    #现在的程序 默认100个点
+    x_pos = target_lanes_df[:, range(lane_idx_start, num_columns  , 2)]
+    y_pos = target_lanes_df[:, range(lane_idx_start + 1 , num_columns  , 2)]
+    x_pos = x_pos.dropna(axis=1)
+    y_pos = y_pos.dropna(axis=1)
+
 ### re-organize points by numpy
     x_pos_np = x_pos.to_numpy() # m * n
     y_pos_np = y_pos.to_numpy()
@@ -300,18 +329,18 @@ def get_features( raw_lane_path: str,
     #AL vectors at every point to every actor 
     lane_actor_vectors = \
         lanes_position.repeat_interleave(len(node_inds_19), dim=0) - node_positions_rel.repeat(lane_vectors.size(0), 1)
-    mask = torch.norm(lane_actor_vectors, p=2, dim=-1) < 50 # 
+    mask = torch.norm(lane_actor_vectors, p=2, dim=-1) < 100 # 原来是50 建议改成100 当前处理的尚为50
     lane_actor_index = lane_actor_index[:, mask]
     lane_actor_vectors = lane_actor_vectors[mask]
     seq_id = frame_to_get
 # L = (m * (n-1) )
     return  {
         'x': x[:, : 20],  # [N, 20, 2] 
-        'positions': positions,  # [N, 50, 2]   
+        'positions': positions,  # [N, 70, 2]   
         'edge_index': edge_index,  # [2, N x N - 1]
-        'y': y,  # [N, 30, 2]
+        'y': y,  # [N, 50, 2]
         'num_nodes': actor_num,
-        'padding_mask': padding_mask,  # [N, 50]
+        'padding_mask': padding_mask,  # [N, 70]
         'bos_mask': bos_mask,  # [N, 20]
         'rotate_angles': rotate_angles,  # [N]
         'lane_vectors': lane_vectors,  # [L, 2]
@@ -323,11 +352,12 @@ def get_features( raw_lane_path: str,
         'seq_id': int(seq_id),
         'av_index': av_index,
         'agent_index': agent_index,
-        'city': None,
+        'city': 'Hefei',
         'origin': origin.unsqueeze(0),
         'theta': theta,
         'raw_lane_pos': raw_lane_pos, #n*2
-        'complete_samples': complete_samples
+        'complete_samples': complete_samples,
+        'filenamne':  f"{name_parts}_{seq_id}"
     }
 
 def list_csv_files_sorted(folder_path):

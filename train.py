@@ -43,5 +43,5 @@ if __name__ == '__main__':
     model = HiVT(**vars(args))# 将等同于调用：HiVT(learning_rate=0.01, num_layers=5.....) 等模型参数  实例化
     # some_function(**params)  # 等同于 some_function(a=1, b=2)
     datamodule = ArgoverseV1DataModule.from_argparse_args(args)#以参数 实例化
-    trainer.fit(model, datamodule, ckpt_path='/home/alon/Learning/HiVT/lightning_logs/version_22/checkpoints/epoch=62-step=648773.ckpt')
-    # trainer.fit(model, datamodule) #开始调用 数据处理 loader和训练
+    # trainer.fit(model, datamodule, ckpt_path='/home/alon/Learning/HiVT/lightning_logs/version_22/checkpoints/epoch=62-step=648773.ckpt')
+    trainer.fit(model, datamodule) #开始调用 数据处理 loader和训练
