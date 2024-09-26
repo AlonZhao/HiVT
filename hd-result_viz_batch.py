@@ -13,7 +13,9 @@ def plot_single_vehicle(
     sample_groundtruth: np.ndarray,  # (20, 2) 
     sample_forecasted_trajectories: List[np.ndarray],  # List[(30, 2)]
     ):
-
+    sample_groundtruth = np.concatenate((np.expand_dims(sample_past_trajectory[-1], axis=0), sample_groundtruth), axis=0)
+    for sample_forecasted_trajectory in sample_forecasted_trajectories:
+        sample_forecasted_trajectory = np.concatenate((np.expand_dims(sample_past_trajectory[-1], axis=0), sample_forecasted_trajectory), axis=0)
     ## Plot history
     plt.plot(
         sample_past_trajectory[:, 0],
@@ -100,9 +102,15 @@ info_ = model_unit.eval()
 
 folder_path = '/home/alon/Learning/HiVT/data_root/val/processed/'
 files = [f for f in os.listdir(folder_path) if f.endswith('.pt')]
+# files =[     
+#                'data_collection_CHERY_E0Y_10034_EVENT_MANUAL_2024-08-29-14-54-09_no_camera_199.pt',
+#                 'data_collection_CHERY_E0Y_10034_EVENT_MANUAL_2024-08-29-14-54-09_no_camera_209.pt',
+#                  'data_collection_CHERY_E0Y_10034_EVENT_MANUAL_2024-08-29-14-54-09_no_camera_219.pt'] 
 random.seed(2024)
 random.seed(2025)
 random.seed(2026)
+random.seed(2027)
+random.seed(2028)
 random.shuffle(files)
 cnt = 0
 for file_name in files:
@@ -133,12 +141,14 @@ for file_name in files:
     complete_idx = test_data['complete_samples']
     
     for i in  complete_idx:
+        
+        print('agent ',i)
         print('pi_agent = ', pi_agent[i])
         actor_to_show = i
         sample_past_trajectory = full_traj[actor_to_show,:20,:]
         sample_groundtruth = full_traj[actor_to_show,20:,:]
         full_truth = full_traj_np[actor_to_show]
-        sample_forecasted_trajectories = [pred_traj_np[actor_to_show][i] for i in range(3)]
+        sample_forecasted_trajectories = [pred_traj_np[actor_to_show][k] for k in range(3)]
         # orange red green: past future prediction
         plot_single_vehicle(sample_past_trajectory,sample_groundtruth,sample_forecasted_trajectories)
         plt.scatter(
